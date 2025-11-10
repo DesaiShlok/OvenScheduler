@@ -1,0 +1,58 @@
+BEGIN
+{
+        printf("COMM,PID,RUNQ_MS,TOTAL_MS\n");
+}
+
+/*Start of process, from a fork*/
+tracepoint:sched:sched_process_fork
+{
+        @rq_start_time[args.child_pid] = nsecs;
+        @exec_start_time[args.child_pid] = nsecs;
+}
+
+
+/*This is where the process is enqueued to run queue, also executes after being blocked*/
+tracepoint:sched:sched_wakeup_new, tracepoint:sched:sched_wakeup
+{
+        @rq_start_time[args.pid] = nsecs;
+        if(!(@exec_start_time[args.pid]))
+        {
+                @exec_start_time[args.pid] = nsecs;
+        }
+}
+
+tracepoint:sched:sched_switch
+{
+        /* prev is put on run queue, so start rq time*/
+        if (args.prev_state == 0) { /*checks for task Running*/
+                /*if prev_state is running, then its going back to the run queue, 
+                or its being blocked and not added back to the run queue*/
+                @rq_start_time[args.prev_pid] = nsecs;
+        }
+        if (@rq_start_time[args.next_pid]) {
+                $wait_slice = nsecs - @rq_start_time[args.next_pid];
+                @total_rq_time[args.next_pid] += $wait_slice;
+                delete(@rq_start_time[args.next_pid]);
+        }
+
+       
+}
+
+tracepoint:sched:sched_process_exit
+{
+        /* if exit directly from running, add exec time*/
+        if (@exec_start_time[args.pid]) {
+                $exec_slice = nsecs - @exec_start_time[args.pid];
+                @total_exec_time[args.pid] += $exec_slice;
+        }
+
+        $rq_time_ms = @total_rq_time[args.pid] / 1000000;
+        $exec_time_ms = @total_exec_time[args.pid] / 1000000;
+
+        printf("%s,%d,%lld,%lld\n", args.comm, args.pid, $rq_time_ms, $exec_time_ms);
+
+        delete(@rq_start_time[args.pid]);
+        delete(@exec_start_time[args.pid]);
+        delete(@total_rq_time[args.pid]);
+        delete(@total_exec_time[args.pid]);
+}
